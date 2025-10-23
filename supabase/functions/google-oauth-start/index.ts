@@ -17,35 +17,26 @@ Deno.serve(async (req: Request) => {
 
   try {
     const authHeader = req.headers.get("Authorization");
-    if (!authHeader) {
-      return new Response(
-        JSON.stringify({ error: "Missing authorization header" }),
-        {
-          status: 401,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        }
-      );
+    let user: any = null;
+
+    // If authorization header is provided, verify the user
+    if (authHeader) {
+      const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+      const supabaseKey = Deno.env.get("SUPABASE_ANON_KEY")!;
+      const supabase = createClient(supabaseUrl, supabaseKey, {
+        global: {
+          headers: { Authorization: authHeader },
+        },
+      });
+
+      const { data: { user: authUser }, error: userError } = await supabase.auth.getUser();
+      if (!userError && authUser) {
+        user = authUser;
+      }
     }
 
-    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
-    const supabaseKey = Deno.env.get("SUPABASE_ANON_KEY")!;
-    const supabase = createClient(supabaseUrl, supabaseKey, {
-      global: {
-        headers: { Authorization: authHeader },
-      },
-    });
-
-    const { data: { user }, error: userError } = await supabase.auth.getUser();
-
-    if (userError || !user) {
-      return new Response(
-        JSON.stringify({ error: "Unauthorized" }),
-        {
-          status: 401,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        }
-      );
-    }
+    // If no authenticated user, that's okay for signin/signup flow
+    console.log("[OAuth] User authenticated:", !!user);
 
     const base = new URL(req.url).origin.replace("http://", "https://");
     const redirectUri = `${base}/functions/v1/google-oauth-callback`;
@@ -61,10 +52,22 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    const scope = [
-      "https://www.googleapis.com/auth/gmail.send",
-      "https://www.googleapis.com/auth/userinfo.email",
-    ].join(" ");
+    // Determine scope based on whether user is authenticated
+    let scope: string;
+    if (user) {
+      // For authenticated users connecting Gmail
+      scope = [
+        "https://www.googleapis.com/auth/gmail.send",
+        "https://www.googleapis.com/auth/userinfo.email",
+      ].join(" ");
+    } else {
+      // For sign-in/sign-up
+      scope = [
+        "openid",
+        "email",
+        "profile",
+      ].join(" ");
+    }
 
     const auth = new URL("https://accounts.google.com/o/oauth2/v2/auth");
     auth.searchParams.set("client_id", clientId);
@@ -74,13 +77,22 @@ Deno.serve(async (req: Request) => {
     auth.searchParams.set("access_type", "offline");
     auth.searchParams.set("prompt", "select_account consent");
     auth.searchParams.set("include_granted_scopes", "true");
-    auth.searchParams.set("state", user.id);
+    if (user) {
+      auth.searchParams.set("state", user.id);
+    }
 
-    return new Response(null, {
-      status: 302,
+    console.log("[OAuth] Generated auth URL");
+    console.log("[OAuth] Redirect URI:", redirectUri);
+    console.log("[OAuth] Scope:", scope);
+
+    return new Response(JSON.stringify({
+      authUrl: auth.toString(),
+      redirectUri: redirectUri
+    }), {
+      status: 200,
       headers: {
         ...corsHeaders,
-        "Location": auth.toString(),
+        "Content-Type": "application/json",
       },
     });
   } catch (error) {

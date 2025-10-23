@@ -45,7 +45,7 @@ export function GoogleAuthProvider({ children }: { children: ReactNode }) {
 
       // Allow known origins (relax during setup)
       const okOrigins = [
-        'https://dgzhpyjcbjplrmtynrcb.supabase.co',
+        'https://hsftnenijlcpqbqzpyhk.supabase.co',
         'https://nexperience-crm-mul-xopl.bolt.host',
         'http://localhost:5173',
         'http://localhost:54321'

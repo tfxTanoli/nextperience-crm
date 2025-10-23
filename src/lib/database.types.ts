@@ -99,6 +99,35 @@ export interface Database {
           created_at?: string
         }
       }
+      users: {
+        Row: {
+          id: string
+          email: string
+          full_name: string | null
+          is_active: boolean
+          has_all_access: boolean
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id: string
+          email: string
+          full_name?: string | null
+          is_active?: boolean
+          has_all_access?: boolean
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          email?: string
+          full_name?: string | null
+          is_active?: boolean
+          has_all_access?: boolean
+          created_at?: string
+          updated_at?: string
+        }
+      }
       teams: {
         Row: {
           id: string
@@ -691,6 +720,7 @@ export interface Database {
 
 export type Company = Database['public']['Tables']['companies']['Row']
 export type Role = Database['public']['Tables']['roles']['Row']
+export type User = Database['public']['Tables']['users']['Row']
 export type UserCompanyRole = Database['public']['Tables']['user_company_roles']['Row']
 export type Team = Database['public']['Tables']['teams']['Row']
 export type Customer = Database['public']['Tables']['customers']['Row']

@@ -24,11 +24,8 @@ Deno.serve(async (req: Request) => {
       return errorResponse("Missing authorization code");
     }
 
-    // State is optional - it's only present for authenticated users
-    const userId = state || null;
-
-    const base = new URL(req.url).origin.replace("http://", "https://");
-    const redirectUri = `${base}/functions/v1/google-oauth-callback`;
+    const base = url.origin.replace("http://", "https://");
+    const redirectUri = `${base}/functions/v1/google-oauth-signin-callback`;
 
     const clientId = Deno.env.get("GOOGLE_CLIENT_ID") ?? Deno.env.get("VITE_GOOGLE_CLIENT_ID");
     const clientSecret = Deno.env.get("GOOGLE_CLIENT_SECRET") ?? Deno.env.get("VITE_GOOGLE_CLIENT_SECRET");
@@ -37,6 +34,7 @@ Deno.serve(async (req: Request) => {
       return errorResponse("OAuth credentials not configured");
     }
 
+    // Exchange code for tokens
     const tokenResponse = await fetch("https://oauth2.googleapis.com/token", {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -57,82 +55,73 @@ Deno.serve(async (req: Request) => {
 
     const tokens = await tokenResponse.json();
 
-    const expiresAt = new Date(Date.now() + (tokens.expires_in * 1000));
+    // Get user info from Google
+    const userInfoResponse = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
+      headers: {
+        "Authorization": `Bearer ${tokens.access_token}`,
+      },
+    });
+
+    if (!userInfoResponse.ok) {
+      return errorResponse("Failed to get user info");
+    }
+
+    const googleUser = await userInfoResponse.json();
+    console.log("[OAuth] Got Google user:", googleUser.email);
 
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const supabase = createClient(supabaseUrl, supabaseKey);
 
-    // If userId is present, this is a Gmail connection for an authenticated user
-    if (userId) {
-      const { error: upsertError } = await supabase
-        .from("google_tokens")
-        .upsert({
-          user_id: userId,
-          access_token: tokens.access_token,
-          refresh_token: tokens.refresh_token,
-          expires_at: expiresAt.toISOString(),
-          scope: tokens.scope,
-          updated_at: new Date().toISOString(),
-        }, {
-          onConflict: "user_id"
-        });
+    // Check if user exists
+    const { data: existingUser } = await supabase.auth.admin.listUsers();
+    const user = existingUser?.users?.find(u => u.email === googleUser.email);
 
-      if (upsertError) {
-        console.error("[OAuth] Database error:", upsertError);
-        return errorResponse("Failed to save tokens");
-      }
+    let userId: string;
 
-      console.log("[OAuth] Tokens saved successfully for user:", userId);
+    if (user) {
+      // User exists, use their ID
+      userId = user.id;
+      console.log("[OAuth] User exists:", userId);
     } else {
-      // This is a sign-in/sign-up flow - get user info from Google
-      const userInfoResponse = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
-        headers: {
-          "Authorization": `Bearer ${tokens.access_token}`,
+      // Create new user
+      const { data: newUser, error: createError } = await supabase.auth.admin.createUser({
+        email: googleUser.email,
+        email_confirm: true,
+        user_metadata: {
+          full_name: googleUser.name,
+          picture: googleUser.picture,
         },
       });
 
-      if (!userInfoResponse.ok) {
-        return errorResponse("Failed to get user info from Google");
+      if (createError) {
+        console.error("[OAuth] Failed to create user:", createError);
+        return errorResponse("Failed to create user account");
       }
 
-      const googleUser = await userInfoResponse.json();
-      console.log("[OAuth] Got Google user:", googleUser.email);
-
-      // Check if user exists
-      const { data: existingUsers } = await supabase.auth.admin.listUsers();
-      const existingUser = existingUsers?.users?.find(u => u.email === googleUser.email);
-
-      let newUserId: string;
-
-      if (existingUser) {
-        newUserId = existingUser.id;
-        console.log("[OAuth] User exists:", newUserId);
-      } else {
-        // Create new user
-        const { data: newUser, error: createError } = await supabase.auth.admin.createUser({
-          email: googleUser.email,
-          email_confirm: true,
-          user_metadata: {
-            full_name: googleUser.name,
-            picture: googleUser.picture,
-          },
-        });
-
-        if (createError) {
-          console.error("[OAuth] Failed to create user:", createError);
-          return errorResponse("Failed to create user account");
-        }
-
-        newUserId = newUser.user.id;
-        console.log("[OAuth] Created new user:", newUserId);
-      }
+      userId = newUser.user.id;
+      console.log("[OAuth] Created new user:", userId);
     }
+
+    // Generate Supabase session
+    const { data: sessionData, error: sessionError } = await supabase.auth.admin.generateLink({
+      type: "magiclink",
+      email: googleUser.email,
+    });
+
+    if (sessionError) {
+      console.error("[OAuth] Failed to generate session:", sessionError);
+      return errorResponse("Failed to create session");
+    }
+
+    // Redirect to app with success
+    const appUrl = new URL(supabaseUrl);
+    const redirectUrl = `${appUrl.origin.replace(".supabase.co", "")}/auth/callback?code=${code}&type=signup`;
 
     const html = `<!DOCTYPE html>
 <html>
 <head>
-  <title>Connected to Google</title>
+  <title>Signing in...</title>
   <style>
     body {
       font-family: system-ui, -apple-system, sans-serif;
@@ -152,9 +141,18 @@ Deno.serve(async (req: Request) => {
       border-radius: 20px;
       box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
     }
-    .success-icon {
-      font-size: 4rem;
-      margin-bottom: 1rem;
+    .spinner {
+      border: 4px solid rgba(255, 255, 255, 0.3);
+      border-top: 4px solid white;
+      border-radius: 50%;
+      width: 40px;
+      height: 40px;
+      animation: spin 1s linear infinite;
+      margin: 0 auto 1rem;
+    }
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
     }
     h2 {
       margin: 0 0 0.5rem 0;
@@ -168,38 +166,20 @@ Deno.serve(async (req: Request) => {
 </head>
 <body>
   <div class="container">
-    <div class="success-icon">✓</div>
-    <h2>Connected Successfully!</h2>
-    <p>You can now send emails. This window will close automatically...</p>
+    <div class="spinner"></div>
+    <h2>Signing you in...</h2>
+    <p>Please wait while we complete your authentication.</p>
   </div>
   <script>
-    (function() {
-      try {
-        const payload = {
-          type: 'google-connected',
-          success: true,
-          timestamp: Date.now()
-        };
-
-        if (window.opener && !window.opener.closed) {
-          console.log('[Callback] Posting success message to opener');
-          window.opener.postMessage(payload, '*');
-
-          setTimeout(() => {
-            window.opener.postMessage(payload, '*');
-          }, 100);
-        } else {
-          console.warn('[Callback] No valid opener window');
-        }
-      } catch (e) {
-        console.error('[Callback] Error:', e);
-      }
-
-      setTimeout(() => {
-        console.log('[Callback] Closing window');
-        window.close();
-      }, 2000);
-    })();
+    // Store the code and redirect
+    localStorage.setItem('google_auth_code', '${code}');
+    localStorage.setItem('google_user_email', '${googleUser.email}');
+    localStorage.setItem('google_user_id', '${userId}');
+    
+    // Redirect to app
+    setTimeout(() => {
+      window.location.href = '${window.location.origin}?google_signin=true';
+    }, 1000);
   </script>
 </body>
 </html>`;
@@ -220,7 +200,7 @@ function errorResponse(message: string) {
   const html = `<!DOCTYPE html>
 <html>
 <head>
-  <title>Connection Failed</title>
+  <title>Sign in Failed</title>
   <style>
     body {
       font-family: system-ui, -apple-system, sans-serif;
@@ -257,27 +237,14 @@ function errorResponse(message: string) {
 <body>
   <div class="container">
     <div class="error-icon">✕</div>
-    <h2>Connection Failed</h2>
+    <h2>Sign in Failed</h2>
     <p>${message}</p>
-    <p style="margin-top: 1rem;">This window will close automatically...</p>
+    <p style="margin-top: 1rem;">Redirecting back...</p>
   </div>
   <script>
-    (function() {
-      try {
-        if (window.opener && !window.opener.closed) {
-          window.opener.postMessage({
-            type: 'google-error',
-            error: '${message}'
-          }, '*');
-        }
-      } catch (e) {
-        console.error('[Callback] Error:', e);
-      }
-
-      setTimeout(() => {
-        window.close();
-      }, 3000);
-    })();
+    setTimeout(() => {
+      window.location.href = '${window.location.origin}?google_error=${encodeURIComponent(message)}';
+    }, 2000);
   </script>
 </body>
 </html>`;
@@ -290,3 +257,4 @@ function errorResponse(message: string) {
     }
   });
 }
+
