@@ -398,34 +398,42 @@ export default function QuotationModal({ quotation, leadData, customerData, onCl
           .delete()
           .eq('quotation_id', quotationId);
       } else {
+        const quotationData: any = {
+          company_id: currentCompany.id,
+          customer_id: customer.id,
+          salesperson_id: user.id,
+          quotation_date: formData.quotation_date,
+          expiration_date: expirationDate,
+          status: 'draft',
+          subtotal: getSubtotal(),
+          vat_enabled: formData.vat_enabled,
+          vat_rate: formData.vat_rate,
+          vat_amount: getVATAmount(),
+          total_amount: getTotal(),
+          notes: formData.notes || '',
+          body_html: bodyHtml || '',
+          terms_html: termsHtml || '',
+          created_by: user.id,
+          quotation_no: '',
+        };
+
+        // Only add optional fields if they have values
+        if (lead?.id) quotationData.lead_id = lead.id;
+        if (formData.template_id) quotationData.template_id = formData.template_id;
+        if (formData.event_type_id) quotationData.event_type_id = formData.event_type_id;
+        if (formData.no_of_pax) quotationData.no_of_pax = formData.no_of_pax;
+        if (formData.event_date) quotationData.event_date = formData.event_date;
+
         const { data: quotation, error: quotationError } = await supabase
           .from('quotations')
-          .insert({
-            company_id: currentCompany.id,
-            lead_id: lead?.id || null,
-            customer_id: customer.id,
-            salesperson_id: user.id,
-            quotation_date: formData.quotation_date,
-            expiration_date: expirationDate,
-            status: 'draft',
-            subtotal: getSubtotal(),
-            vat_enabled: formData.vat_enabled,
-            vat_rate: formData.vat_rate,
-            vat_amount: getVATAmount(),
-            total_amount: getTotal(),
-            notes: formData.notes,
-            body_html: bodyHtml,
-            terms_html: termsHtml,
-            template_id: formData.template_id,
-            event_type_id: formData.event_type_id,
-            no_of_pax: formData.no_of_pax,
-            event_date: formData.event_date,
-            created_by: user.id,
-          })
+          .insert(quotationData)
           .select()
           .single();
 
-        if (quotationError) throw quotationError;
+        if (quotationError) {
+          console.error('Quotation creation error:', quotationError);
+          throw quotationError;
+        }
         quotationId = quotation.id;
       }
 

@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { useCompany } from '../../contexts/CompanyContext';
 import { useAuth } from '../../contexts/AuthContext';
+import { useGoogleAuth } from '../../contexts/GoogleAuthContext';
 import { CompanySwitcher } from './CompanySwitcher';
 import {
   LayoutDashboard,
@@ -28,6 +29,7 @@ interface NavigationProps {
 export function Navigation({ currentView, onNavigate }: NavigationProps) {
   const { permissions, currentCompany, companies, switchCompany } = useCompany();
   const { signOut, user } = useAuth();
+  const { unreadCount } = useGoogleAuth();
   const [showDropdown, setShowDropdown] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
@@ -47,6 +49,7 @@ export function Navigation({ currentView, onNavigate }: NavigationProps) {
     { id: 'customers', label: 'Customers', icon: Users, show: permissions?.customers.read },
     { id: 'leads', label: 'Leads', icon: TrendingUp, show: permissions?.leads.read },
     { id: 'quotations', label: 'Quotations', icon: FileText, show: permissions?.quotations?.read },
+    { id: 'emails', label: 'Emails', icon: Mail, show: true },
     { id: 'templates', label: 'Templates', icon: FileType, show: permissions?.quotations?.read },
     { id: 'products', label: 'Products', icon: Package, show: permissions?.products.read },
   ];
@@ -65,7 +68,7 @@ export function Navigation({ currentView, onNavigate }: NavigationProps) {
                   <button
                     key={item.id}
                     onClick={() => onNavigate(item.id)}
-                    className={`flex items-center gap-2 px-3 lg:px-4 py-2 rounded-lg transition-colors whitespace-nowrap ${
+                    className={`flex items-center gap-2 px-3 lg:px-4 py-2 rounded-lg transition-colors whitespace-nowrap relative ${
                       currentView === item.id
                         ? 'bg-slate-900 text-white'
                         : 'text-slate-600 hover:bg-slate-100'
@@ -73,6 +76,11 @@ export function Navigation({ currentView, onNavigate }: NavigationProps) {
                   >
                     <Icon className="w-4 h-4" />
                     <span className="font-medium text-sm lg:text-base">{item.label}</span>
+                    {item.id === 'emails' && unreadCount > 0 && (
+                      <span className="absolute -top-2 -right-2 bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
+                        {unreadCount > 99 ? '99+' : unreadCount}
+                      </span>
+                    )}
                   </button>
                 );
               })}
@@ -168,7 +176,7 @@ export function Navigation({ currentView, onNavigate }: NavigationProps) {
               <button
                 key={item.id}
                 onClick={() => onNavigate(item.id)}
-                className={`flex items-center gap-2 px-4 py-2 rounded-lg whitespace-nowrap transition-colors ${
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg whitespace-nowrap transition-colors relative ${
                   currentView === item.id
                     ? 'bg-slate-900 text-white'
                     : 'text-slate-600 hover:bg-slate-100'
@@ -176,6 +184,11 @@ export function Navigation({ currentView, onNavigate }: NavigationProps) {
               >
                 <Icon className="w-4 h-4" />
                 <span className="font-medium">{item.label}</span>
+                {item.id === 'emails' && unreadCount > 0 && (
+                  <span className="absolute -top-2 -right-2 bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
+                    {unreadCount > 99 ? '99+' : unreadCount}
+                  </span>
+                )}
               </button>
             );
           })}

@@ -18,6 +18,7 @@ import CalendarView from './components/calendar/CalendarView';
 import { TemplatesPage } from './components/templates/TemplatesPage';
 import { PublicQuotationView } from './components/quotations/PublicQuotationView';
 import { ProfilePage } from './components/profile/ProfilePage';
+import { EmailsPage } from './components/emails/EmailsPage';
 
 function AppContent() {
   const { user, loading: authLoading, signOut } = useAuth();
@@ -95,6 +96,7 @@ function AppContent() {
         {currentView === 'calendar' && (
           <CalendarView onBack={() => setCurrentView('leads')} />
         )}
+        {currentView === 'emails' && <EmailsPage />}
         {currentView === 'profile' && <ProfilePage />}
         {currentView === 'settings' && <Settings />}
       </div>

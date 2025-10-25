@@ -8,6 +8,7 @@ const corsHeaders = {
 };
 
 Deno.serve(async (req: Request) => {
+  // Handle CORS preflight
   if (req.method === "OPTIONS") {
     return new Response(null, {
       status: 200,
@@ -15,10 +16,23 @@ Deno.serve(async (req: Request) => {
     });
   }
 
+  // Handle GET requests (OAuth callback from Google)
+  if (req.method !== "GET") {
+    return new Response(
+      JSON.stringify({ error: "Method not allowed" }),
+      {
+        status: 405,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      }
+    );
+  }
+
   try {
     const url = new URL(req.url);
     const code = url.searchParams.get("code");
     const state = url.searchParams.get("state");
+
+    console.log("[OAuth] Callback received - code:", code?.substring(0, 10) + "...", "state:", state);
 
     if (!code) {
       return errorResponse("Missing authorization code");
@@ -32,6 +46,9 @@ Deno.serve(async (req: Request) => {
 
     const clientId = Deno.env.get("GOOGLE_CLIENT_ID") ?? Deno.env.get("VITE_GOOGLE_CLIENT_ID");
     const clientSecret = Deno.env.get("GOOGLE_CLIENT_SECRET") ?? Deno.env.get("VITE_GOOGLE_CLIENT_SECRET");
+
+    console.log("[OAuth] Client ID configured:", !!clientId);
+    console.log("[OAuth] Client Secret configured:", !!clientSecret);
 
     if (!clientId || !clientSecret) {
       return errorResponse("OAuth credentials not configured");
@@ -59,33 +76,64 @@ Deno.serve(async (req: Request) => {
 
     const expiresAt = new Date(Date.now() + (tokens.expires_in * 1000));
 
-    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
-    const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-    const supabase = createClient(supabaseUrl, supabaseKey);
-
-    // If userId is present, this is a Gmail connection for an authenticated user
+    // Save tokens directly to database using service role
+    let tokensSaved = false;
     if (userId) {
-      const { error: upsertError } = await supabase
-        .from("google_tokens")
-        .upsert({
-          user_id: userId,
-          access_token: tokens.access_token,
-          refresh_token: tokens.refresh_token,
-          expires_at: expiresAt.toISOString(),
-          scope: tokens.scope,
-          updated_at: new Date().toISOString(),
-        }, {
-          onConflict: "user_id"
-        });
+      try {
+        const supabaseUrl = Deno.env.get("SUPABASE_URL");
+        const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
 
-      if (upsertError) {
-        console.error("[OAuth] Database error:", upsertError);
-        return errorResponse("Failed to save tokens");
+        console.log("[OAuth] Attempting to save tokens for user:", userId);
+        console.log("[OAuth] Supabase URL:", supabaseUrl);
+        console.log("[OAuth] Service key available:", !!supabaseServiceKey);
+
+        if (supabaseUrl && supabaseServiceKey) {
+          // Use Supabase client with service role for better error handling
+          const supabase = createClient(supabaseUrl, supabaseServiceKey);
+
+          const { data, error } = await supabase
+            .from('google_tokens')
+            .upsert({
+              user_id: userId,
+              access_token: tokens.access_token,
+              refresh_token: tokens.refresh_token,
+              expires_at: expiresAt.toISOString(),
+              scope: tokens.scope,
+              updated_at: new Date().toISOString(),
+            }, {
+              onConflict: 'user_id'
+            });
+
+          if (error) {
+            console.error("[OAuth] Error saving tokens via Supabase client:", error);
+          } else {
+            console.log("[OAuth] Tokens saved successfully for user:", userId);
+            console.log("[OAuth] Saved data:", data);
+            tokensSaved = true;
+          }
+        } else {
+          console.error("[OAuth] Missing Supabase configuration");
+        }
+      } catch (dbError) {
+        console.error("[OAuth] Database error:", dbError);
       }
+    }
 
-      console.log("[OAuth] Tokens saved successfully for user:", userId);
-    } else {
-      // This is a sign-in/sign-up flow - get user info from Google
+    // Return tokens as JSON for the browser to handle
+    // The browser will save them using an authenticated request
+    const responseData = {
+      success: true,
+      tokens: {
+        access_token: tokens.access_token,
+        refresh_token: tokens.refresh_token,
+        expires_at: expiresAt.toISOString(),
+        scope: tokens.scope,
+      },
+      userId: userId || null,
+    };
+
+    // If this is a sign-in/sign-up flow, get user info from Google
+    if (!userId) {
       const userInfoResponse = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
         headers: {
           "Authorization": `Bearer ${tokens.access_token}`,
@@ -97,36 +145,11 @@ Deno.serve(async (req: Request) => {
       }
 
       const googleUser = await userInfoResponse.json();
-      console.log("[OAuth] Got Google user:", googleUser.email);
-
-      // Check if user exists
-      const { data: existingUsers } = await supabase.auth.admin.listUsers();
-      const existingUser = existingUsers?.users?.find(u => u.email === googleUser.email);
-
-      let newUserId: string;
-
-      if (existingUser) {
-        newUserId = existingUser.id;
-        console.log("[OAuth] User exists:", newUserId);
-      } else {
-        // Create new user
-        const { data: newUser, error: createError } = await supabase.auth.admin.createUser({
-          email: googleUser.email,
-          email_confirm: true,
-          user_metadata: {
-            full_name: googleUser.name,
-            picture: googleUser.picture,
-          },
-        });
-
-        if (createError) {
-          console.error("[OAuth] Failed to create user:", createError);
-          return errorResponse("Failed to create user account");
-        }
-
-        newUserId = newUser.user.id;
-        console.log("[OAuth] Created new user:", newUserId);
-      }
+      responseData.googleUser = {
+        email: googleUser.email,
+        name: googleUser.name,
+        picture: googleUser.picture,
+      };
     }
 
     const html = `<!DOCTYPE html>
@@ -178,18 +201,38 @@ Deno.serve(async (req: Request) => {
         const payload = {
           type: 'google-connected',
           success: true,
+          data: ${JSON.stringify(responseData)},
           timestamp: Date.now()
         };
 
+        console.log('[Callback] Payload:', payload);
+        console.log('[Callback] Window opener exists:', !!window.opener);
+        console.log('[Callback] Window opener closed:', window.opener?.closed);
+
         if (window.opener && !window.opener.closed) {
           console.log('[Callback] Posting success message to opener');
+          // Send to all origins since we don't know the exact origin
           window.opener.postMessage(payload, '*');
 
+          // Send again after a short delay to ensure delivery
           setTimeout(() => {
+            console.log('[Callback] Sending duplicate message');
             window.opener.postMessage(payload, '*');
           }, 100);
+
+          // Send one more time before closing
+          setTimeout(() => {
+            console.log('[Callback] Sending final message before close');
+            window.opener.postMessage(payload, '*');
+          }, 500);
         } else {
-          console.warn('[Callback] No valid opener window');
+          console.warn('[Callback] No valid opener window - storing in localStorage as fallback');
+          // Fallback: store in localStorage for the parent to retrieve
+          try {
+            localStorage.setItem('google_oauth_tokens', JSON.stringify(payload));
+          } catch (e) {
+            console.error('[Callback] Failed to store in localStorage:', e);
+          }
         }
       } catch (e) {
         console.error('[Callback] Error:', e);
@@ -198,7 +241,7 @@ Deno.serve(async (req: Request) => {
       setTimeout(() => {
         console.log('[Callback] Closing window');
         window.close();
-      }, 2000);
+      }, 1500);
     })();
   </script>
 </body>
