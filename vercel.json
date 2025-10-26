@@ -1,0 +1,16 @@
+{
+  "buildCommand": "npm run build",
+  "installCommand": "npm install",
+  "outputDirectory": "dist",
+  "devCommand": "npm run dev",
+  "framework": "vite",
+  "env": {
+    "VITE_SUPABASE_URL": "@vite_supabase_url",
+    "VITE_SUPABASE_ANON_KEY": "@vite_supabase_anon_key",
+    "VITE_GOOGLE_CLIENT_ID": "@vite_google_client_id",
+    "VITE_XENDIT_PUBLIC_KEY": "@vite_xendit_public_key",
+    "VITE_APP_NAME": "@vite_app_name",
+    "VITE_APP_VERSION": "@vite_app_version"
+  }
+}
+
