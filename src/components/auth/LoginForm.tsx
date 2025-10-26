@@ -120,24 +120,41 @@ export function LoginForm() {
       return;
     }
 
-    const { error: signUpError } = await supabase.auth.signUp({
-      email,
-      password,
-      options: {
-        data: {
-          full_name: fullName
+    try {
+      console.log('[SignUp] Starting sign-up process for:', email);
+
+      const { error: signUpError, data } = await supabase.auth.signUp({
+        email,
+        password,
+        options: {
+          data: {
+            full_name: fullName
+          },
+          emailRedirectTo: `${window.location.origin}/auth/callback`
         }
+      });
+
+      console.log('[SignUp] Sign-up response:', { error: signUpError, data });
+
+      if (signUpError) {
+        console.error('[SignUp] Sign-up error:', signUpError);
+        setError(signUpError.message || 'Failed to create account');
+        setLoading(false);
+        return;
       }
-    });
 
-    if (signUpError) {
-      setError(signUpError.message);
+      console.log('[SignUp] Account created successfully');
+      setSuccess('Account created successfully! Please check your email to confirm your account.');
+      setEmail('');
+      setPassword('');
+      setConfirmPassword('');
+      setFullName('');
       setLoading(false);
-      return;
+    } catch (err) {
+      console.error('[SignUp] Unexpected error:', err);
+      setError(err instanceof Error ? err.message : 'An unexpected error occurred');
+      setLoading(false);
     }
-
-    setSuccess('Account created successfully! Please contact your administrator to get access to business units.');
-    setLoading(false);
   };
 
   const handleResetPassword = async () => {
