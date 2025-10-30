@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Mail, Inbox, Send, RefreshCw, Search, X, Trash2, Eye, EyeOff } from 'lucide-react';
 import { useGoogleAuth } from '../../contexts/GoogleAuthContext';
+import { useCompany } from '../../contexts/CompanyContext';
 import { EmailThreadView } from './EmailThreadView';
 import { ComposeEmailModal } from './ComposeEmailModal';
 
@@ -16,6 +17,7 @@ interface GmailMessage {
 
 export function EmailsPage() {
   const { isConnected, connectGoogle, disconnectGoogle, fetchMessages, markAsRead, markAsUnread, deleteMessage, searchMessages } = useGoogleAuth();
+  const { currentCompany } = useCompany();
   const [messages, setMessages] = useState<GmailMessage[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
@@ -26,7 +28,7 @@ export function EmailsPage() {
 
   useEffect(() => {
     if (isConnected) loadMessages();
-  }, [isConnected]);
+  }, [isConnected, currentCompany?.id]);
 
   const loadMessages = async () => {
     setLoading(true);
@@ -42,7 +44,7 @@ export function EmailsPage() {
 
   const fetchGmailMessages = async (): Promise<GmailMessage[]> => {
     try {
-      return await fetchMessages(50);
+      return await fetchMessages(50, currentCompany?.id);
     } catch (error) {
       console.error('Error fetching messages:', error);
       return [];
@@ -57,7 +59,7 @@ export function EmailsPage() {
     }
     setLoading(true);
     try {
-      const results = await searchMessages(searchQuery);
+      const results = await searchMessages(searchQuery, 50, currentCompany?.id);
       setMessages(results);
     } catch (error) {
       console.error('Error searching messages:', error);

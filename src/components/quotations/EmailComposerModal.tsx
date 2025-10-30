@@ -62,7 +62,7 @@ ${currentCompany?.name || 'Our Team'}`,
     try {
       const pdfBase64 = await generateQuotationPDF();
 
-      await sendEmail({
+      const gmailResponse = await sendEmail({
         to: [formData.to],
         subject: formData.subject,
         body: formData.body.replace(/\n/g, '<br>'),
@@ -78,6 +78,7 @@ ${currentCompany?.name || 'Our Team'}`,
       await supabase.from('email_messages').insert({
         company_id: currentCompany?.id,
         sender_user_id: user?.id,
+        recipient_email: formData.to,
         direction: 'outbound',
         from_address: user?.email || '',
         to_addresses: [formData.to],
@@ -85,6 +86,7 @@ ${currentCompany?.name || 'Our Team'}`,
         body: formData.body,
         entity_type: 'quotation',
         entity_id: quotationId,
+        gmail_message_id: gmailResponse.id,
         sent_at: new Date().toISOString(),
       });
 

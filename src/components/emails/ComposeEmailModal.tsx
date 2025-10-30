@@ -42,16 +42,26 @@ export function ComposeEmailModal({ onClose, onSuccess, defaultTo = '', defaultS
 
       if (!response.ok) throw new Error('Failed to send email');
 
-      await supabase.from('email_messages').insert({
+      const gmailResponse = await response.json();
+      const gmailMessageId = gmailResponse.id;
+
+      const { error: insertError } = await supabase.from('email_messages').insert({
         company_id: currentCompany?.id,
         sender_user_id: user?.id,
+        recipient_email: to,
         direction: 'outbound',
         from_address: user?.email || '',
         to_addresses: [to],
         subject,
         body,
+        gmail_message_id: gmailMessageId,
         sent_at: new Date().toISOString()
       });
+
+      if (insertError) {
+        console.error('Error inserting email message:', insertError);
+        throw new Error(`Failed to save email: ${insertError.message}`);
+      }
 
       onSuccess();
     } catch (err: any) {

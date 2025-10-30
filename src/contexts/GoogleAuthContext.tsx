@@ -8,14 +8,14 @@ interface GoogleAuthContextType {
   unreadCount: number;
   connectGoogle: () => void;
   disconnectGoogle: () => Promise<void>;
-  sendEmail: (params: SendEmailParams) => Promise<void>;
-  fetchMessages: (maxResults?: number) => Promise<any[]>;
+  sendEmail: (params: SendEmailParams) => Promise<{ id: string }>;
+  fetchMessages: (maxResults?: number, companyId?: string) => Promise<any[]>;
   fetchThread: (threadId: string) => Promise<any>;
   markAsRead: (messageId: string) => Promise<void>;
   markAsUnread: (messageId: string) => Promise<void>;
   deleteMessage: (messageId: string) => Promise<void>;
   getLabels: () => Promise<any[]>;
-  searchMessages: (query: string, maxResults?: number) => Promise<any[]>;
+  searchMessages: (query: string, maxResults?: number, companyId?: string) => Promise<any[]>;
   subscribeToUnreadCount: () => void;
   unsubscribeFromUnreadCount: () => void;
 }
@@ -446,53 +446,99 @@ export function GoogleAuthProvider({ children }: { children: ReactNode }) {
     return message;
   };
 
-  const fetchMessages = async (maxResults: number = 50): Promise<any[]> => {
+  const fetchMessages = async (maxResults: number = 50, companyId?: string): Promise<any[]> => {
     if (!user) throw new Error('User not authenticated');
     if (!isConnected) throw new Error('Google account not connected');
 
-    const { data: tokenData } = await supabase
-      .from('google_tokens')
-      .select('access_token, refresh_token, expires_at')
-      .eq('user_id', user.id)
-      .maybeSingle();
+    try {
+      // First, fetch all Gmail message IDs that are tracked in email_messages table
+      let query = supabase
+        .from('email_messages')
+        .select('id, gmail_message_id')
+        .eq('sender_user_id', user.id);
 
-    if (!tokenData) throw new Error('No Google token found');
+      if (companyId) {
+        query = query.eq('company_id', companyId);
+      }
 
-    let accessToken = tokenData.access_token;
-    const expiresAt = new Date(tokenData.expires_at);
+      const { data: trackedEmails, error } = await query;
 
-    if (expiresAt <= new Date()) {
-      accessToken = await refreshAccessToken(tokenData.refresh_token);
+      if (error) {
+        console.error('Error fetching tracked emails:', error);
+        // If the column doesn't exist, return empty array
+        if (error.code === '42703') {
+          console.warn('gmail_message_id column does not exist yet');
+          return [];
+        }
+        return [];
+      }
+
+      // Filter to only include emails with gmail_message_id
+      const trackedGmailIds = new Set((trackedEmails || [])
+        .filter(e => e.gmail_message_id)
+        .map(e => e.gmail_message_id));
+
+      if (trackedGmailIds.size === 0) {
+        // No tracked emails, return empty array
+        return [];
+      }
+
+      const { data: tokenData } = await supabase
+        .from('google_tokens')
+        .select('access_token, refresh_token, expires_at')
+        .eq('user_id', user.id)
+        .maybeSingle();
+
+      if (!tokenData) throw new Error('No Google token found');
+
+      let accessToken = tokenData.access_token;
+      const expiresAt = new Date(tokenData.expires_at);
+
+      if (expiresAt <= new Date()) {
+        accessToken = await refreshAccessToken(tokenData.refresh_token);
+      }
+
+      const response = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=${maxResults}`, {
+        headers: { Authorization: `Bearer ${accessToken}` }
+      });
+
+      if (!response.ok) throw new Error('Failed to fetch messages');
+      const data = await response.json();
+
+      // Filter Gmail messages to only include those tracked in email_messages table
+      const filteredGmailIds = (data.messages || [])
+        .filter((msg: any) => trackedGmailIds.has(msg.id))
+        .slice(0, maxResults);
+
+      if (filteredGmailIds.length === 0) {
+        return [];
+      }
+
+      const messages = await Promise.all(
+        filteredGmailIds.map(async (msg: any) => {
+          const msgResponse = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}`, {
+            headers: { Authorization: `Bearer ${accessToken}` }
+          });
+          return msgResponse.json();
+        })
+      );
+
+      return messages.map((m: any) => {
+        const headers = m.payload.headers;
+        return {
+          id: m.id,
+          threadId: m.threadId,
+          snippet: m.snippet,
+          from: headers.find((h: any) => h.name === 'From')?.value || '',
+          subject: headers.find((h: any) => h.name === 'Subject')?.value || '',
+          date: new Date(parseInt(m.internalDate)).toLocaleDateString(),
+          unread: m.labelIds?.includes('UNREAD') || false
+        };
+      });
+    } catch (error) {
+      console.error('Error in fetchMessages:', error);
+      return [];
     }
-
-    const response = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=${maxResults}`, {
-      headers: { Authorization: `Bearer ${accessToken}` }
-    });
-
-    if (!response.ok) throw new Error('Failed to fetch messages');
-    const data = await response.json();
-
-    const messages = await Promise.all(
-      (data.messages || []).map(async (msg: any) => {
-        const msgResponse = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}`, {
-          headers: { Authorization: `Bearer ${accessToken}` }
-        });
-        return msgResponse.json();
-      })
-    );
-
-    return messages.map((m: any) => {
-      const headers = m.payload.headers;
-      return {
-        id: m.id,
-        threadId: m.threadId,
-        snippet: m.snippet,
-        from: headers.find((h: any) => h.name === 'From')?.value || '',
-        subject: headers.find((h: any) => h.name === 'Subject')?.value || '',
-        date: new Date(parseInt(m.internalDate)).toLocaleDateString(),
-        unread: m.labelIds?.includes('UNREAD') || false
-      };
-    });
   };
 
   const fetchThread = async (threadId: string): Promise<any> => {
@@ -645,54 +691,100 @@ export function GoogleAuthProvider({ children }: { children: ReactNode }) {
     return data.labels || [];
   };
 
-  const searchMessages = async (query: string, maxResults: number = 50): Promise<any[]> => {
+  const searchMessages = async (query: string, maxResults: number = 50, companyId?: string): Promise<any[]> => {
     if (!user) throw new Error('User not authenticated');
     if (!isConnected) throw new Error('Google account not connected');
 
-    const { data: tokenData } = await supabase
-      .from('google_tokens')
-      .select('access_token, refresh_token, expires_at')
-      .eq('user_id', user.id)
-      .maybeSingle();
+    try {
+      // First, fetch all Gmail message IDs that are tracked in email_messages table
+      let supabaseQuery = supabase
+        .from('email_messages')
+        .select('id, gmail_message_id')
+        .eq('sender_user_id', user.id);
 
-    if (!tokenData) throw new Error('No Google token found');
+      if (companyId) {
+        supabaseQuery = supabaseQuery.eq('company_id', companyId);
+      }
 
-    let accessToken = tokenData.access_token;
-    const expiresAt = new Date(tokenData.expires_at);
+      const { data: trackedEmails, error } = await supabaseQuery;
 
-    if (expiresAt <= new Date()) {
-      accessToken = await refreshAccessToken(tokenData.refresh_token);
+      if (error) {
+        console.error('Error fetching tracked emails:', error);
+        // If the column doesn't exist, return empty array
+        if (error.code === '42703') {
+          console.warn('gmail_message_id column does not exist yet');
+          return [];
+        }
+        return [];
+      }
+
+      // Filter to only include emails with gmail_message_id
+      const trackedGmailIds = new Set((trackedEmails || [])
+        .filter(e => e.gmail_message_id)
+        .map(e => e.gmail_message_id));
+
+      if (trackedGmailIds.size === 0) {
+        // No tracked emails, return empty array
+        return [];
+      }
+
+      const { data: tokenData } = await supabase
+        .from('google_tokens')
+        .select('access_token, refresh_token, expires_at')
+        .eq('user_id', user.id)
+        .maybeSingle();
+
+      if (!tokenData) throw new Error('No Google token found');
+
+      let accessToken = tokenData.access_token;
+      const expiresAt = new Date(tokenData.expires_at);
+
+      if (expiresAt <= new Date()) {
+        accessToken = await refreshAccessToken(tokenData.refresh_token);
+      }
+
+      const encodedQuery = encodeURIComponent(query);
+      const response = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodedQuery}&maxResults=${maxResults}`, {
+        headers: { Authorization: `Bearer ${accessToken}` }
+      });
+
+      if (!response.ok) throw new Error('Failed to search messages');
+      const data = await response.json();
+
+      // Filter Gmail messages to only include those tracked in email_messages table
+      const filteredGmailIds = (data.messages || [])
+        .filter((msg: any) => trackedGmailIds.has(msg.id))
+        .slice(0, maxResults);
+
+      if (filteredGmailIds.length === 0) {
+        return [];
+      }
+
+      const messages = await Promise.all(
+        filteredGmailIds.map(async (msg: any) => {
+          const msgResponse = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}`, {
+            headers: { Authorization: `Bearer ${accessToken}` }
+          });
+          return msgResponse.json();
+        })
+      );
+
+      return messages.map((m: any) => {
+        const headers = m.payload.headers;
+        return {
+          id: m.id,
+          threadId: m.threadId,
+          snippet: m.snippet,
+          from: headers.find((h: any) => h.name === 'From')?.value || '',
+          subject: headers.find((h: any) => h.name === 'Subject')?.value || '',
+          date: new Date(parseInt(m.internalDate)).toLocaleDateString(),
+          unread: m.labelIds?.includes('UNREAD') || false
+        };
+      });
+    } catch (error) {
+      console.error('Error in searchMessages:', error);
+      return [];
     }
-
-    const encodedQuery = encodeURIComponent(query);
-    const response = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodedQuery}&maxResults=${maxResults}`, {
-      headers: { Authorization: `Bearer ${accessToken}` }
-    });
-
-    if (!response.ok) throw new Error('Failed to search messages');
-    const data = await response.json();
-
-    const messages = await Promise.all(
-      (data.messages || []).map(async (msg: any) => {
-        const msgResponse = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}`, {
-          headers: { Authorization: `Bearer ${accessToken}` }
-        });
-        return msgResponse.json();
-      })
-    );
-
-    return messages.map((m: any) => {
-      const headers = m.payload.headers;
-      return {
-        id: m.id,
-        threadId: m.threadId,
-        snippet: m.snippet,
-        from: headers.find((h: any) => h.name === 'From')?.value || '',
-        subject: headers.find((h: any) => h.name === 'Subject')?.value || '',
-        date: new Date(parseInt(m.internalDate)).toLocaleDateString(),
-        unread: m.labelIds?.includes('UNREAD') || false
-      };
-    });
   };
 
   const subscribeToUnreadCount = () => {
